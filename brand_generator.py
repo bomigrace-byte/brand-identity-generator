@@ -1,62 +1,91 @@
 import os
 import json
-import matplotlib.pyplot as plt
 import base64
 import re
 
+import matplotlib.pyplot as plt
+import requests
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from matplotlib.patches import Rectangle
+
+
+# =========================
+# 결과 데이터 구조
+# =========================
 
 class BrandName(BaseModel):
     name: str
     meaning: str
 
+
 class NamingResult(BaseModel):
     korean: list[BrandName]
     english: list[BrandName]
 
+
 class SloganResult(BaseModel):
     slogans: list[str]
+
 
 class BrandStoryResult(BaseModel):
     origin: str
     philosophy: str
-    vision: str    
+    vision: str
+
 
 class ColorPaletteResult(BaseModel):
     main_color: str
     sub_colors: list[str]
+
 
 class CompetitorAnalysis(BaseModel):
     competitor: str
     characteristics: str
     strengths: str
 
+
 class CompetitorAnalysisResult(BaseModel):
     competitors: list[CompetitorAnalysis]
     differentiation: str
 
 
+# =========================
+# API 설정
+# =========================
+
+TEXT_MODEL = "gpt-5-mini"
+IMAGE_MODEL = "gpt-image-1-mini"
+
+
 def load_env():
     load_dotenv()
 
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("CODYSSEY_API_KEY")
+    base_url = os.getenv("CODYSSEY_BASE_URL")
 
     if not api_key:
-        raise ValueError("GEMINI_API_KEY가 설정되지 않았습니다.")
+        raise ValueError("CODYSSEY_API_KEY가 설정되지 않았습니다.")
 
-    return genai.Client(api_key=api_key)
+    if not base_url:
+        raise ValueError("CODYSSEY_BASE_URL이 설정되지 않았습니다.")
 
+    return api_key, base_url.rstrip("/")
+
+
+# =========================
+# 사용자 입력
+# =========================
 
 def get_user_input():
     print("🎨 AI 브랜드 아이덴티티 생성기")
     print()
 
     brief_path = input("브리프 파일 경로를 입력하세요: ")
-    output_dir = input("출력 폴더 경로를 입력하세요 (엔터 시 ./output): ")
+
+    output_dir = input(
+        "출력 폴더 경로를 입력하세요 (엔터 시 ./output): "
+    )
 
     if not output_dir:
         output_dir = "./output"
@@ -70,412 +99,975 @@ def load_brief(file_path):
     with open(file_path, "r", encoding="utf-8") as f:
         brief = json.load(f)
 
+    required_fields = [
+        "industry",
+        "target",
+        "keywords",
+    ]
+
+    missing_fields = [
+        field
+        for field in required_fields
+        if field not in brief
+    ]
+
+    if missing_fields:
+        raise ValueError(
+            "브리프에 필수 항목이 없습니다: "
+            + ", ".join(missing_fields)
+        )
+
     return brief
 
-def safe_generate(step_name, generate_func, *args):
-    try:
-        return generate_func(*args)
-    except Exception as e:
-        print(f"⚠️ {step_name} 생성 실패: {e}")
-        return None
 
-def generate_competitor_analysis(client, brief):
+# =========================
+# Codyssey 텍스트 API
+# =========================
+
+def call_codyssey_text(
+    api_key,
+    base_url,
+    system_prompt,
+    user_prompt
+):
+    """
+    Codyssey OpenAI 호환 텍스트 API 호출
+
+    POST /v1/chat/completions
+    """
+
+    url = f"{base_url}/v1/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": TEXT_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": system_prompt,
+            },
+            {
+                "role": "user",
+                "content": user_prompt,
+            },
+        ],
+        "max_tokens": 2000,
+    }
+
+    response = requests.post(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=120,
+    )
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    try:
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as e:
+        raise ValueError(
+            f"텍스트 API 응답 형식이 예상과 다릅니다: {data}"
+        ) from e
+
+
+def parse_json_response(text):
+    """
+    LLM 응답에서 JSON을 추출한다.
+    """
+
+    text = text.strip()
+
+    # ```json ... ``` 제거
+    if text.startswith("```"):
+        text = re.sub(
+            r"^```(?:json)?\s*",
+            "",
+            text
+        )
+        text = re.sub(
+            r"\s*```$",
+            "",
+            text
+        )
+
+    try:
+        return json.loads(text)
+
+    except json.JSONDecodeError:
+        # 응답 앞뒤에 설명이 붙은 경우
+        start = text.find("{")
+        end = text.rfind("}")
+
+        if start != -1 and end > start:
+            return json.loads(
+                text[start:end + 1]
+            )
+
+        raise ValueError(
+            f"JSON 응답을 파싱할 수 없습니다: {text}"
+        )
+
+
+def generate_structured_result(
+    api_key,
+    base_url,
+    system_prompt,
+    user_prompt,
+    result_model,
+):
+    """
+    API 호출
+    → JSON 파싱
+    → Pydantic 검증
+    """
+
+    text = call_codyssey_text(
+        api_key,
+        base_url,
+        system_prompt,
+        user_prompt,
+    )
+
+    data = parse_json_response(text)
+
+    try:
+        result = result_model.model_validate(data)
+
+    except ValidationError as e:
+        raise ValueError(
+            f"AI 응답 구조가 올바르지 않습니다: {e}"
+        ) from e
+
+    return result.model_dump()
+
+
+# =========================
+# 브랜드 네이밍
+# =========================
+
+def generate_naming(
+    api_key,
+    base_url,
+    brief
+):
+    system_prompt = """
+당신은 전문 브랜드 네이밍 전문가입니다.
+
+브랜드 브리프를 바탕으로 기억하기 쉽고
+차별화된 브랜드 이름을 제안하세요.
+
+반드시 JSON 객체만 반환하세요.
+Markdown이나 설명 문장은 포함하지 마세요.
+
+JSON 형식:
+
+{
+  "korean": [
+    {
+      "name": "이름",
+      "meaning": "이름의 의미"
+    }
+  ],
+  "english": [
+    {
+      "name": "Name",
+      "meaning": "이름의 의미"
+    }
+  ]
+}
+"""
+
+    user_prompt = f"""
+다음 브랜드 브리프를 분석하세요.
+
+산업:
+{brief["industry"]}
+
+타깃:
+{brief["target"]}
+
+키워드:
+{brief["keywords"]}
+
+톤:
+{brief.get("tone", "")}
+
+경쟁사:
+{brief.get("competitors", [])}
+
+추가사항:
+{brief.get("notes", "")}
+
+한국어 이름 3개와 영어 이름 3개를 제안하세요.
+
+각 이름에는 이름의 의미를 작성하세요.
+
+반드시 위에서 제시한 JSON 형식만 반환하세요.
+"""
+
+    return generate_structured_result(
+    api_key,
+    base_url,
+    system_prompt,
+    user_prompt,
+    NamingResult,
+)
+
+
+# =========================
+# 슬로건
+# =========================
+
+def generate_slogans(
+    api_key,
+    base_url,
+    brief
+):
+    system_prompt = """
+당신은 전문 브랜드 카피라이터입니다.
+
+브랜드의 핵심 가치와 타깃을 반영하여
+짧고 기억하기 쉬운 슬로건을 만드세요.
+
+반드시 JSON 객체만 반환하세요.
+
+JSON 형식:
+
+{
+  "slogans": [
+    "슬로건 1",
+    "슬로건 2",
+    "슬로건 3"
+  ]
+}
+"""
+
+    user_prompt = f"""
+다음 브랜드 브리프를 바탕으로
+슬로건 3개를 작성하세요.
+
+산업:
+{brief["industry"]}
+
+타깃:
+{brief["target"]}
+
+키워드:
+{brief["keywords"]}
+
+톤:
+{brief.get("tone", "")}
+
+추가사항:
+{brief.get("notes", "")}
+"""
+
+    return generate_structured_result(
+        api_key,
+        base_url,
+        system_prompt,
+        user_prompt,
+        SloganResult,
+    )
+
+
+# =========================
+# 브랜드 스토리
+# =========================
+
+def generate_brand_story(
+    api_key,
+    base_url,
+    brief
+):
+    system_prompt = """
+당신은 브랜드 전략 및 스토리텔링 전문가입니다.
+
+브랜드의 기원, 철학, 비전을 자연스럽게 연결하세요.
+
+반드시 JSON 객체만 반환하세요.
+
+JSON 형식:
+
+{
+  "origin": "브랜드의 기원",
+  "philosophy": "브랜드 철학",
+  "vision": "브랜드 비전"
+}
+"""
+
+    user_prompt = f"""
+다음 브랜드 브리프를 바탕으로
+브랜드 스토리를 작성하세요.
+
+산업:
+{brief["industry"]}
+
+타깃:
+{brief["target"]}
+
+키워드:
+{brief["keywords"]}
+
+톤:
+{brief.get("tone", "")}
+
+추가사항:
+{brief.get("notes", "")}
+
+origin:
+브랜드가 왜 시작되었는지 작성하세요.
+
+philosophy:
+브랜드가 중요하게 생각하는 가치를 작성하세요.
+
+vision:
+브랜드가 앞으로 어떤 방향을 추구하는지 작성하세요.
+
+세 부분을 합쳐 약 300자 내외가 되도록 작성하세요.
+"""
+
+    return generate_structured_result(
+        api_key,
+        base_url,
+        system_prompt,
+        user_prompt,
+        BrandStoryResult,
+    )
+
+
+# =========================
+# 경쟁사 분석
+# =========================
+
+def generate_competitor_analysis(
+    api_key,
+    base_url,
+    brief
+):
     competitors = brief.get("competitors", [])
 
     if not competitors:
         return None
 
-    prompt = f"""
-당신은 전문 브랜드 전략 컨설턴트입니다.
+    system_prompt = """
+당신은 브랜드 전략 및 경쟁사 분석 전문가입니다.
 
-다음 브랜드 정보를 바탕으로 경쟁사 분석을 수행해주세요.
+경쟁사의 특징과 강점을 분석하고
+우리 브랜드의 차별화 방향을 제안하세요.
 
-업종: {brief["industry"]}
-타겟: {brief["target"]}
-키워드: {", ".join(brief["keywords"])}
-경쟁사: {", ".join(competitors)}
-톤앤매너: {brief.get("tone", "자유롭게 제안")}
-추가 요청사항: {brief.get("notes", "없음")}
+반드시 JSON 객체만 반환하세요.
 
-각 경쟁사에 대해 다음 내용을 분석하세요.
+JSON 형식:
 
-1. 주요 특징과 기능
-2. 경쟁사의 강점
-
-그리고 모든 경쟁사 분석을 바탕으로
-우리 브랜드가 가져갈 수 있는 차별화 방향을 제안하세요.
-
-분석은 실제 브랜드 전략 수립에 도움이 되도록
-구체적이고 이해하기 쉽게 작성하세요.
-
-반드시 지정된 JSON 구조로만 응답하세요.
+{
+  "competitors": [
+    {
+      "competitor": "경쟁사명",
+      "characteristics": "주요 특징",
+      "strengths": "주요 강점"
+    }
+  ],
+  "differentiation": "우리 브랜드의 차별화 방향"
+}
 """
 
-    response = client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=CompetitorAnalysisResult
-        )
-    )
+    user_prompt = f"""
+다음 브랜드와 경쟁사를 분석하세요.
 
-    return json.loads(response.text)
+산업:
+{brief["industry"]}
 
-def generate_naming(client, brief):
-    prompt = f"""
-당신은 전문 브랜드 네이밍 전문가입니다.
+타깃:
+{brief["target"]}
 
-다음 브랜드 정보를 바탕으로 브랜드 이름을 만들어주세요.
+키워드:
+{brief["keywords"]}
 
-업종: {brief["industry"]}
-타겟: {brief["target"]}
-키워드: {", ".join(brief["keywords"])}
-톤앤매너: {brief.get("tone", "자유롭게 제안")}
-추가 요청사항: {brief.get("notes", "없음")}
+경쟁사:
+{competitors}
 
-한글 브랜드명 3개와 영문 브랜드명 3개를 제안하고,
-각 이름의 의미와 작명 의도를 설명해주세요.
+톤:
+{brief.get("tone", "")}
 
-브랜드의 업종, 타겟, 키워드, 톤앤매너를 고려하여
-기억하기 쉽고 실제 브랜드로 사용할 수 있는 이름을 제안하세요.
+추가사항:
+{brief.get("notes", "")}
 
-반드시 지정된 JSON 구조로만 응답하세요.
+각 경쟁사의 특징과 강점을 분석하세요.
+
+마지막으로 우리 브랜드가
+어떤 방향으로 차별화하면 좋을지 작성하세요.
 """
 
-    response = client.models.generate_content(
-    model="gemini-3.6-flash",
-    contents=prompt,
-    config=types.GenerateContentConfig(
-        response_mime_type="application/json",
-        response_schema=NamingResult
+    return generate_structured_result(
+        api_key,
+        base_url,
+        system_prompt,
+        user_prompt,
+        CompetitorAnalysisResult,
     )
-)
 
-    return json.loads(response.text)
 
-def generate_slogans(client, brief):
-    prompt = f"""
-당신은 전문 브랜드 카피라이터입니다.
+# =========================
+# 컬러 팔레트
+# =========================
 
-다음 브랜드 정보를 바탕으로 브랜드 슬로건을 만들어주세요.
+def generate_color_palette(
+    api_key,
+    base_url,
+    brief
+):
+    system_prompt = """
+당신은 브랜드 컬러 전략 전문가입니다.
 
-업종: {brief["industry"]}
-타겟: {brief["target"]}
-키워드: {", ".join(brief["keywords"])}
-톤앤매너: {brief.get("tone", "자유롭게 제안")}
-추가 요청사항: {brief.get("notes", "없음")}
+브랜드의 산업, 타깃, 키워드와 톤을 고려하여
+브랜드 컬러 팔레트를 제안하세요.
 
-다음 조건을 반드시 지켜주세요.
+반드시 JSON 객체만 반환하세요.
 
-1. 브랜드의 핵심 가치를 잘 표현하는 슬로건을 3개 생성하세요.
-2. 짧고 기억하기 쉬운 문장으로 작성하세요.
-3. 타겟 고객이 서비스의 가치를 쉽게 이해할 수 있도록 작성하세요.
-4. 서로 다른 방향의 슬로건을 제안하세요.
+중요:
+- main_color는 반드시 HEX 6자리 형식
+- sub_colors도 반드시 HEX 6자리 형식
+- 색상명이나 설명을 HEX 값에 붙이지 마세요.
 
-반드시 지정된 JSON 구조로만 응답하세요.
+예:
+#2563EB
+
+JSON 형식:
+
+{
+  "main_color": "#2563EB",
+  "sub_colors": [
+    "#DBEAFE",
+    "#1E3A8A",
+    "#F8FAFC"
+  ]
+}
 """
 
-    response = client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=SloganResult
-        )
-    )
+    user_prompt = f"""
+다음 브랜드 브리프를 바탕으로
+브랜드 컬러 팔레트를 제안하세요.
 
-    return json.loads(response.text)
+산업:
+{brief["industry"]}
 
+타깃:
+{brief["target"]}
 
+키워드:
+{brief["keywords"]}
 
-def generate_brand_story(client, brief):
-    prompt = f"""
-당신은 전문 브랜드 스토리텔러입니다.
+톤:
+{brief.get("tone", "")}
 
-다음 브랜드 정보를 바탕으로 브랜드 스토리를 작성해주세요.
+추가사항:
+{brief.get("notes", "")}
 
-업종: {brief["industry"]}
-타겟: {brief["target"]}
-키워드: {", ".join(brief["keywords"])}
-톤앤매너: {brief.get("tone", "자유롭게 제안")}
-추가 요청사항: {brief.get("notes", "없음")}
-
-다음 조건을 반드시 지켜주세요.
-
-1. 브랜드 탄생 배경(Origin)을 작성하세요.
-2. 브랜드 철학(Philosophy)을 작성하세요.
-3. 브랜드가 추구하는 미래와 비전(Vision)을 작성하세요.
-4. 세 내용을 합쳐 약 300자 분량의 자연스러운 브랜드 스토리가 되도록 작성하세요.
-5. 브랜드의 업종, 타겟, 키워드가 자연스럽게 반영되어야 합니다.
-6. 홍보 문구처럼 과장하지 말고 실제 브랜드 소개에 사용할 수 있는 문체로 작성하세요.
-
-반드시 지정된 JSON 구조로만 응답하세요.
+메인 컬러 1개와
+서브 컬러 3개를 제안하세요.
 """
 
-    response = client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=BrandStoryResult
-        )
+    return generate_structured_result(
+        api_key,
+        base_url,
+        system_prompt,
+        user_prompt,
+        ColorPaletteResult,
     )
 
-    return json.loads(response.text)
 
-def generate_color_palette(client, brief):
-    prompt = f"""
-당신은 전문 브랜드 아이덴티티 디자이너입니다.
+# =========================
+# 컬러 팔레트 이미지
+# =========================
 
-다음 브랜드 정보를 바탕으로 브랜드 컬러 팔레트를 제안해주세요.
-
-업종: {brief["industry"]}
-타겟: {brief["target"]}
-키워드: {", ".join(brief["keywords"])}
-톤앤매너: {brief.get("tone", "자유롭게 제안")}
-추가 요청사항: {brief.get("notes", "없음")}
-
-다음 조건을 반드시 지켜주세요.
-
-1. 브랜드를 대표하는 메인 컬러를 1개 선정하세요.
-2. 메인 컬러와 조화를 이루는 서브 컬러를 2~3개 선정하세요.
-3. 모든 색상은 정확한 HEX 코드로 작성하세요.
-4. 브랜드의 업종, 타겟, 키워드, 톤앤매너를 고려하세요.
-5. 실제 웹 서비스나 브랜드 아이덴티티에 사용할 수 있는 조화로운 색상 조합을 제안하세요.
-
-반드시 지정된 JSON 구조로만 응답하세요.
-"""
-
-    response = client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=ColorPaletteResult
-        )
-    )
-
-    return json.loads(response.text)
-
-def palette_to_image(color_palette, output_dir):
+def palette_to_image(
+    color_palette,
+    output_dir
+):
     colors = [
         color_palette["main_color"],
-        *color_palette["sub_colors"]
+        *color_palette["sub_colors"],
     ]
 
     valid_colors = []
 
     for color in colors:
-        match = re.search(r"#[0-9A-Fa-f]{6}", color)
+        match = re.search(
+            r"#[0-9A-Fa-f]{6}",
+            color
+        )
 
         if not match:
-            raise ValueError(f"유효하지 않은 HEX 색상값: {color}")
+            raise ValueError(
+                f"유효하지 않은 HEX 색상값: {color}"
+            )
 
-        valid_colors.append(match.group())
+        valid_colors.append(
+            match.group().upper()
+        )
 
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(
+        figsize=(8, 2)
+    )
 
     for i, color in enumerate(valid_colors):
         ax.add_patch(
-            Rectangle((i, 0), 1, 1, color=color)
+            Rectangle(
+                (i, 0),
+                1,
+                1,
+                color=color,
+            )
         )
 
-    ax.set_xlim(0, len(valid_colors))
+    ax.set_xlim(
+        0,
+        len(valid_colors)
+    )
+
     ax.set_ylim(0, 1)
+
     ax.axis("off")
 
-    output_path = os.path.join(output_dir, "color_palette.png")
-    fig.savefig(output_path, bbox_inches="tight", pad_inches=0)
+    output_path = os.path.join(
+        output_dir,
+        "color_palette.png"
+    )
+
+    fig.savefig(
+        output_path,
+        bbox_inches="tight",
+        pad_inches=0,
+    )
+
     plt.close(fig)
 
     return output_path
 
-def generate_logos(client, brief, output_dir):
-    prompt = f"""
-AI 업무 생산성 서비스의 브랜드 로고 컨셉을 디자인해주세요.
 
-업종: {brief["industry"]}
-타겟: {brief["target"]}
-키워드: {", ".join(brief["keywords"])}
-톤앤매너: {brief.get("tone", "자유롭게 제안")}
-추가 요청사항: {brief.get("notes", "없음")}
+# =========================
+# 로고 이미지 생성
+# =========================
 
-깔끔하고 현대적이며 전문적인 브랜드 로고를 만들어주세요.
-AI, 자동화, 효율성, 집중과 성장의 이미지를 시각적으로 표현하세요.
-심플하고 기억하기 쉬운 형태로 디자인하세요.
-실제 웹 서비스의 브랜드 로고로 사용할 수 있는 수준으로 제작하세요.
-텍스트나 글자는 포함하지 마세요.
-흰색 또는 투명한 배경을 사용하세요.
+def generate_logos(
+    api_key,
+    base_url,
+    brief,
+    output_dir
+):
+    """
+    Codyssey 이미지 API
+
+    POST /api/v1/images
+    response_format = b64_json
+    """
+
+    url = f"{base_url}/api/v1/images"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    base_prompt = f"""
+Create a professional brand logo concept.
+
+Industry:
+{brief["industry"]}
+
+Target:
+{brief["target"]}
+
+Keywords:
+{brief["keywords"]}
+
+Tone:
+{brief.get("tone", "")}
+
+Notes:
+{brief.get("notes", "")}
+
+Requirements:
+- Clean and modern
+- Simple and memorable
+- Suitable for a digital brand
+- Professional visual identity
+- Avoid excessive detail
+- Clean background
+- Focus on the logo concept
 """
 
     logo_paths = []
 
     for i in range(1, 4):
-        interaction = client.interactions.create(
-            model="gemini-3.1-flash-image",
-            input=prompt
+        prompt = (
+            base_prompt
+            + f"""
+This is logo concept #{i}.
+Make this concept visually distinct from the others.
+"""
         )
 
-        image_data = interaction.output_image.data
+        payload = {
+            "model": IMAGE_MODEL,
+            "prompt": prompt,
+            "size": "1024x1024",
+            "response_format": "b64_json",
+        }
+
+        response = requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=180,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        try:
+            image_b64 = (
+                data["result"]["images"][0]["b64_json"]
+            )
+
+        except (
+            KeyError,
+            IndexError,
+            TypeError
+        ) as e:
+            raise ValueError(
+                f"이미지 API 응답 형식이 예상과 다릅니다: {data}"
+            ) from e
+
+        # data:image/png;base64,... 형태 대응
+        if image_b64.startswith("data:"):
+            image_b64 = image_b64.split(
+                ",",
+                1
+            )[1]
+
+        image_data = base64.b64decode(
+            image_b64
+        )
 
         output_path = os.path.join(
             output_dir,
             f"logo_{i}.png"
         )
 
-        with open(output_path, "wb") as f:
-            f.write(base64.b64decode(image_data))
+        with open(
+            output_path,
+            "wb"
+        ) as f:
+            f.write(image_data)
 
-        logo_paths.append(output_path)
+        logo_paths.append(
+            output_path
+        )
 
     return logo_paths
 
-def save_result(result, output_dir):
-    output_path = os.path.join(output_dir, "brand_result.json")
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
+# =========================
+# 공통 오류 처리
+# =========================
+
+def safe_generate(
+    step_name,
+    generate_func,
+    *args
+):
+    try:
+        return generate_func(*args)
+
+    except requests.HTTPError as e:
+        response = e.response
+
+        print(
+            f"⚠️ {step_name} 생성 실패: "
+            f"HTTP {response.status_code}"
+        )
+
+        try:
+            print(
+                f"   API 응답: {response.json()}"
+            )
+        except ValueError:
+            print(
+                f"   API 응답: {response.text}"
+            )
+
+        return None
+
+    except Exception as e:
+        print(
+            f"⚠️ {step_name} 생성 실패: {e}"
+        )
+
+        return None
+
+
+# =========================
+# 결과 저장
+# =========================
+
+def save_result(
+    result,
+    output_dir
+):
+    output_path = os.path.join(
+        output_dir,
+        "brand_result.json"
+    )
+
+    with open(
+        output_path,
+        "w",
+        encoding="utf-8"
+    ) as f:
+        json.dump(
+            result,
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
 
     return output_path
 
-if __name__ == "__main__":
-    client = load_env()
 
-    brief_path, output_dir = get_user_input()
-    brief = load_brief(brief_path)
+# =========================
+# 프로그램 실행
+# =========================
+
+if __name__ == "__main__":
+
+    try:
+        api_key, base_url = load_env()
+
+        brief_path, output_dir = (
+            get_user_input()
+        )
+
+        brief = load_brief(
+            brief_path
+        )
+
+    except Exception as e:
+        print(
+            f"❌ 프로그램을 시작할 수 없습니다: {e}"
+        )
+        raise SystemExit(1)
+
+    print()
+    print(
+        "🚀 브랜드 아이덴티티 생성을 시작합니다."
+    )
+    print()
 
     naming = safe_generate(
         "브랜드 네이밍",
         generate_naming,
-        client,
-        brief
+        api_key,
+        base_url,
+        brief,
     )
 
     slogans = safe_generate(
         "슬로건",
         generate_slogans,
-        client,
-        brief
+        api_key,
+        base_url,
+        brief,
     )
 
     brand_story = safe_generate(
         "브랜드 스토리",
         generate_brand_story,
-        client,
-        brief
+        api_key,
+        base_url,
+        brief,
     )
 
     competitor_analysis = safe_generate(
-    "경쟁사 분석",
-    generate_competitor_analysis,
-    client,
-    brief
+        "경쟁사 분석",
+        generate_competitor_analysis,
+        api_key,
+        base_url,
+        brief,
     )
 
     color_palette = safe_generate(
         "컬러 팔레트",
         generate_color_palette,
-        client,
-        brief
+        api_key,
+        base_url,
+        brief,
     )
+
+    palette_path = None
 
     if color_palette:
         palette_path = safe_generate(
-        "컬러 팔레트 이미지",
-        palette_to_image,
-        color_palette,
-        output_dir
-    ) if color_palette else None
+            "컬러 팔레트 이미지",
+            palette_to_image,
+            color_palette,
+            output_dir,
+        )
 
     logo_paths = safe_generate(
         "로고",
         generate_logos,
-        client,
+        api_key,
+        base_url,
         brief,
-        output_dir
+        output_dir,
     )
 
     if logo_paths is None:
         logo_paths = []
 
     result = {
+        "brief": brief,
         "naming": naming,
         "slogans": slogans,
         "brand_story": brand_story,
         "competitor_analysis": competitor_analysis,
         "color_palette": color_palette,
-        "logos": logo_paths
+        "color_palette_image": palette_path,
+        "logos": logo_paths,
     }
 
-    result_path = save_result(result, output_dir)
-       
+    result_path = save_result(
+        result,
+        output_dir
+    )
+
+    print()
+    print("=" * 50)
+
+    steps = {
+        "브랜드 네이밍": naming is not None,
+        "슬로건": slogans is not None,
+        "브랜드 스토리": brand_story is not None,
+        "경쟁사 분석": competitor_analysis is not None,
+        "컬러 팔레트": color_palette is not None,
+        "컬러 팔레트 이미지": palette_path is not None,
+        "로고": bool(logo_paths),
+    }
+
+    success_count = sum(steps.values())
+    total_count = len(steps)
+
+    if success_count == total_count:
+        print("🎉 브랜드 아이덴티티 생성이 완료되었습니다.")
+    else:
+        print(
+            f"⚠️ 브랜드 아이덴티티 생성이 일부 완료되었습니다. "
+            f"({success_count}/{total_count})"
+        )
+
+        print()
+        print("생성 결과:")
+
+        for step_name, success in steps.items():
+            status = "✅ 성공" if success else "❌ 실패"
+            print(f"  {status} {step_name}")
+
+    print("=" * 50)
 
     if naming:
         print()
-        print("✅ 브랜드 네이밍 생성 완료")
-        print()
-        print("🇰🇷 한글 네이밍")
+        print("🏷️ 브랜드 네이밍")
 
         for item in naming["korean"]:
-            print(f"- {item['name']}: {item['meaning']}")
-
-        print()
-        print("🌍 영문 네이밍")
+            print(
+                f"  - {item['name']}: "
+                f"{item['meaning']}"
+            )
 
         for item in naming["english"]:
-            print(f"- {item['name']}: {item['meaning']}")
-    else:
-        print()
-        print("⚠️ 브랜드 네이밍 결과가 없습니다.")
+            print(
+                f"  - {item['name']}: "
+                f"{item['meaning']}"
+            )
 
     if slogans:
         print()
         print("💬 슬로건")
 
         for slogan in slogans["slogans"]:
-            print(f"- {slogan}")
-    else:
-        print()
-        print("⚠️ 슬로건 결과가 없습니다.")
+            print(f"  - {slogan}")
 
     if brand_story:
         print()
         print("📖 브랜드 스토리")
-        print(f"- 탄생 배경: {brand_story['origin']}")
-        print(f"- 브랜드 철학: {brand_story['philosophy']}")
-        print(f"- 브랜드 비전: {brand_story['vision']}")
-    else:
-        print()
-        print("⚠️ 브랜드 스토리 결과가 없습니다.")
+        print(
+            f"  기원: {brand_story['origin']}"
+        )
+        print(
+            f"  철학: {brand_story['philosophy']}"
+        )
+        print(
+            f"  비전: {brand_story['vision']}"
+        )
 
     if competitor_analysis:
         print()
         print("🔎 경쟁사 분석")
 
-        for competitor in competitor_analysis["competitors"]:
-            print(f"- 경쟁사: {competitor['competitor']}")
-            print(f"  특징: {competitor['characteristics']}")
-            print(f"  강점: {competitor['strengths']}")
+        for competitor in competitor_analysis[
+            "competitors"
+        ]:
+            print(
+                f"  - {competitor['competitor']}"
+            )
+            print(
+                f"    특징: "
+                f"{competitor['characteristics']}"
+            )
+            print(
+                f"    강점: "
+                f"{competitor['strengths']}"
+            )
 
-        print()
-        print(f"- 차별화 방향: {competitor_analysis['differentiation']}")
-    else:
-        print()
-        print("⚠️ 경쟁사 분석 결과가 없습니다.")
+        print(
+            f"  차별화: "
+            f"{competitor_analysis['differentiation']}"
+        )
 
     if color_palette:
         print()
         print("🎨 컬러 팔레트")
-        print(f"- 메인 컬러: {color_palette['main_color']}")
-
-        print("- 서브 컬러:")
-        for color in color_palette["sub_colors"]:
-            print(f"  - {color}")
-    else:
-        print()
-        print("⚠️ 컬러 팔레트 결과가 없습니다.")
+        print(
+            f"  메인: "
+            f"{color_palette['main_color']}"
+        )
+        print(
+            f"  서브: "
+            f"{', '.join(color_palette['sub_colors'])}"
+        )
 
     print()
-    print("📦 최종 결과 저장 완료")
-    print(f"- {result_path}")
+    print(
+        f"📁 최종 결과 저장: {result_path}"
+    )
+
+    if palette_path:
+        print(
+            f"🖼️ 컬러 팔레트 이미지: "
+            f"{palette_path}"
+        )
+
+    for logo_path in logo_paths:
+        print(
+            f"🖼️ 로고: {logo_path}"
+        )
