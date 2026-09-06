@@ -34,9 +34,15 @@ class BrandStoryResult(BaseModel):
     vision: str
 
 
+class ColorInfo(BaseModel):
+    name: str
+    hex: str
+    meaning: str
+
+
 class ColorPaletteResult(BaseModel):
-    main_color: str
-    sub_colors: list[str]
+    main_color: ColorInfo
+    sub_colors: list[ColorInfo]
 
 
 class CompetitorAnalysis(BaseModel):
@@ -382,14 +388,17 @@ JSON 형식:
 # 브랜드 스토리
 # =========================
 
+
 def generate_brand_story(
     api_key,
     base_url,
-    brief
+    brief,
+    naming
 ):
     system_prompt = """
 당신은 브랜드 전략 및 스토리텔링 전문가입니다.
 
+선택된 대표 브랜드명을 중심으로
 브랜드의 기원, 철학, 비전을 자연스럽게 연결하세요.
 
 반드시 JSON 객체만 반환하세요.
@@ -403,9 +412,21 @@ JSON 형식:
 }
 """
 
+    # 대표 브랜드명 선택
+    representative_name = ""
+
+    if naming:
+        korean_names = naming.get("korean", [])
+
+        if korean_names:
+            representative_name = korean_names[0]["name"]
+
     user_prompt = f"""
-다음 브랜드 브리프를 바탕으로
+다음 브랜드 브리프와 대표 브랜드명을 바탕으로
 브랜드 스토리를 작성하세요.
+
+대표 브랜드명:
+{representative_name}
 
 산업:
 {brief["industry"]}
@@ -423,15 +444,20 @@ JSON 형식:
 {brief.get("notes", "")}
 
 origin:
+대표 브랜드명이 탄생한 배경과
 브랜드가 왜 시작되었는지 작성하세요.
 
 philosophy:
-브랜드가 중요하게 생각하는 가치를 작성하세요.
+브랜드가 중요하게 생각하는 가치와
+대표 브랜드명이 전달하는 의미를 연결하여 작성하세요.
 
 vision:
-브랜드가 앞으로 어떤 방향을 추구하는지 작성하세요.
+대표 브랜드명이 앞으로 어떤 브랜드로 성장하고 싶은지
+구체적으로 작성하세요.
 
 세 부분을 합쳐 약 300자 내외가 되도록 작성하세요.
+
+반드시 위에서 제시한 JSON 형식만 반환하세요.
 """
 
     return generate_structured_result(
@@ -530,24 +556,52 @@ def generate_color_palette(
 브랜드의 산업, 타깃, 키워드와 톤을 고려하여
 브랜드 컬러 팔레트를 제안하세요.
 
-반드시 JSON 객체만 반환하세요.
+메인 컬러 1개와 서브 컬러 3개를 제안하세요.
+
+각 컬러에는 다음 정보를 포함하세요.
+
+- name: 컬러 이름
+- hex: HEX 6자리 색상 코드
+- meaning: 브랜드에서 이 컬러를 사용하는 이유
 
 중요:
-- main_color는 반드시 HEX 6자리 형식
-- sub_colors도 반드시 HEX 6자리 형식
-- 색상명이나 설명을 HEX 값에 붙이지 마세요.
+- hex는 반드시 #으로 시작하는 6자리 HEX 코드만 작성하세요.
+- 색상명이나 설명을 hex 값에 붙이지 마세요.
 
 예:
-#2563EB
+
+{
+  "name": "Ocean Teal",
+  "hex": "#0EA5A9",
+  "meaning": "신뢰감과 혁신적인 이미지를 전달"
+}
+
+반드시 JSON 객체만 반환하세요.
 
 JSON 형식:
 
 {
-  "main_color": "#2563EB",
+  "main_color": {
+    "name": "메인 컬러 이름",
+    "hex": "#2563EB",
+    "meaning": "메인 컬러 선정 이유"
+  },
   "sub_colors": [
-    "#DBEAFE",
-    "#1E3A8A",
-    "#F8FAFC"
+    {
+      "name": "서브 컬러 이름",
+      "hex": "#DBEAFE",
+      "meaning": "서브 컬러 선정 이유"
+    },
+    {
+      "name": "서브 컬러 이름",
+      "hex": "#1E3A8A",
+      "meaning": "서브 컬러 선정 이유"
+    },
+    {
+      "name": "서브 컬러 이름",
+      "hex": "#F8FAFC",
+      "meaning": "서브 컬러 선정 이유"
+    }
   ]
 }
 """
@@ -573,6 +627,11 @@ JSON 형식:
 
 메인 컬러 1개와
 서브 컬러 3개를 제안하세요.
+
+각 컬러의 이름과 HEX 코드,
+그리고 브랜드 관점에서의 선정 이유를 작성하세요.
+
+반드시 위에서 제시한 JSON 형식만 반환하세요.
 """
 
     return generate_structured_result(
@@ -600,22 +659,26 @@ def palette_to_image(
     valid_colors = []
 
     for color in colors:
+        hex_color = color["hex"]
+
         match = re.search(
             r"#[0-9A-Fa-f]{6}",
-            color
+            hex_color
         )
 
         if not match:
             raise ValueError(
-                f"유효하지 않은 HEX 색상값: {color}"
+                f"유효하지 않은 HEX 색상값: {hex_color}"
             )
 
-        valid_colors.append(
-            match.group().upper()
-        )
+        valid_colors.append({
+            "name": color["name"],
+            "hex": match.group().upper(),
+            "meaning": color["meaning"],
+        })
 
     fig, ax = plt.subplots(
-        figsize=(8, 2)
+        figsize=(10, 3)
     )
 
     for i, color in enumerate(valid_colors):
@@ -624,8 +687,18 @@ def palette_to_image(
                 (i, 0),
                 1,
                 1,
-                color=color,
+                color=color["hex"],
             )
+        )
+
+        ax.text(
+            i + 0.5,
+            0.5,
+            f"{color['name']}\n{color['hex']}",
+            ha="center",
+            va="center",
+            fontsize=10,
+            color="black",
         )
 
     ax.set_xlim(
@@ -653,6 +726,7 @@ def palette_to_image(
     return output_path
 
 
+
 # =========================
 # 로고 이미지 생성
 # =========================
@@ -661,7 +735,8 @@ def generate_logos(
     api_key,
     base_url,
     brief,
-    output_dir
+    output_dir,
+    naming
 ):
     """
     Codyssey 이미지 API
@@ -677,8 +752,19 @@ def generate_logos(
         "Content-Type": "application/json",
     }
 
-    base_prompt = f"""
+    representative_name = ""
+
+    if naming:
+        korean_names = naming.get("korean", [])
+
+        if korean_names:
+            representative_name = korean_names[0]["name"]
+
+        base_prompt = f"""
 Create a professional brand logo concept.
+
+Brand name:
+{representative_name}
 
 Industry:
 {brief["industry"]}
@@ -696,6 +782,7 @@ Notes:
 {brief.get("notes", "")}
 
 Requirements:
+- Reflect the brand name and brand identity
 - Clean and modern
 - Simple and memorable
 - Suitable for a digital brand
@@ -895,7 +982,8 @@ if __name__ == "__main__":
         api_key,
         base_url,
         brief,
-    )
+        naming,
+)
 
     competitor_analysis = safe_generate(
         "경쟁사 분석",
@@ -930,6 +1018,7 @@ if __name__ == "__main__":
         base_url,
         brief,
         output_dir,
+        naming,
     )
 
     if logo_paths is None:
@@ -1047,19 +1136,36 @@ if __name__ == "__main__":
     if color_palette:
         print()
         print("🎨 컬러 팔레트")
+
+        main_color = color_palette["main_color"]
+
         print(
             f"  메인: "
-            f"{color_palette['main_color']}"
-        )
-        print(
-            f"  서브: "
-            f"{', '.join(color_palette['sub_colors'])}"
+            f"{main_color['name']} "
+            f"({main_color['hex']})"
         )
 
-    print()
-    print(
-        f"📁 최종 결과 저장: {result_path}"
-    )
+        print(
+            f"    의미: "
+            f"{main_color['meaning']}"
+        )
+
+        print("  서브:")
+
+        for color in color_palette["sub_colors"]:
+            print(
+                f"    - {color['name']} "
+                f"({color['hex']})"
+            )
+            print(
+                f"      의미: "
+                f"{color['meaning']}"
+            )
+
+        print()
+        print(
+            f"📁 최종 결과 저장: {result_path}"
+        )
 
     if palette_path:
         print(
