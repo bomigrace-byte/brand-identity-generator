@@ -2,6 +2,7 @@ import os
 import json
 import matplotlib.pyplot as plt
 import base64
+import re
 
 from dotenv import load_dotenv
 from google import genai
@@ -263,15 +264,26 @@ def palette_to_image(color_palette, output_dir):
         *color_palette["sub_colors"]
     ]
 
+    valid_colors = []
+
+    for color in colors:
+        match = re.search(r"#[0-9A-Fa-f]{6}", color)
+
+        if not match:
+            raise ValueError(f"유효하지 않은 HEX 색상값: {color}")
+
+        valid_colors.append(match.group())
+
     fig, ax = plt.subplots()
 
-    for i, color in enumerate(colors):
+    for i, color in enumerate(valid_colors):
         ax.add_patch(
             Rectangle((i, 0), 1, 1, color=color)
         )
-    ax.set_xlim(0, len(colors))
+
+    ax.set_xlim(0, len(valid_colors))
     ax.set_ylim(0, 1)
-    ax.axis("off")    
+    ax.axis("off")
 
     output_path = os.path.join(output_dir, "color_palette.png")
     fig.savefig(output_path, bbox_inches="tight", pad_inches=0)
@@ -369,9 +381,12 @@ if __name__ == "__main__":
     )
 
     if color_palette:
-        palette_path = palette_to_image(color_palette, output_dir)
-    else:
-        palette_path = None
+        palette_path = safe_generate(
+        "컬러 팔레트 이미지",
+        palette_to_image,
+        color_palette,
+        output_dir
+    ) if color_palette else None
 
     logo_paths = safe_generate(
         "로고",

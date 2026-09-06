@@ -1,8 +1,58 @@
 {
-  "naming": null,
+  "naming": {
+    "korean": [
+      {
+        "name": "일모아",
+        "meaning": "'일'과 '모으다'의 합성어로, 복잡한 업무를 AI가 모아 자동 처리함으로써 작업 시간 단축과 효율 극대화를 이끌어낸다는 의도를 담았습니다."
+      },
+      {
+        "name": "플로우온",
+        "meaning": "업무의 흐름(Flow)을 켜다(On)라는 의미로, 막힘없는 업무 처리를 통해 직장인의 높은 집중도와 성장을 지원하는 친근한 네이밍입니다."
+      },
+      {
+        "name": "워크메이트",
+        "meaning": "'Work'와 'Mate'의 결합으로, 언제나 내 곁에서 전문적으로 업무를 보조하고 자동화해 주는 스마트한 AI 동료를 뜻합니다."
+      }
+    ],
+    "english": [
+      {
+        "name": "Workluent",
+        "meaning": "Work(업무)와 Fluent(유려한, 매끄러운)의 합성어로, AI 기술을 통해 모든 업무가 막힘없이 신속하고 깔끔하게 처리되는 경험을 표현했습니다."
+      },
+      {
+        "name": "Taskify",
+        "meaning": "Task(업무)에 -ify(화하다) 접미사를 결합하여, 복잡한 일상의 업무들을 스마트하게 자동화하고 체계화해 준다는 의미를 직관적으로 전달합니다."
+      },
+      {
+        "name": "Flowzen",
+        "meaning": "Flow(업무 몰입)와 Zen(선/집중)의 합성어로, 잡무를 줄이고 본질적인 업무에 편안하게 집중하여 최고의 생산성을 낼 수 있도록 돕는 세련된 이름입니다."
+      }
+    ]
+  },
   "slogans": null,
   "brand_story": null,
-  "competitor_analysis": null,
-  "color_palette": null,
+  "competitor_analysis": {
+    "competitors": [
+      {
+        "competitor": "Notion",
+        "characteristics": "문서 작성, 프로젝트 관리, 데이터베이스 구축 등을 하나의 공간에서 해결하는 올인원 워크스페이스로, 최근 Notion AI를 탑재하여 문서 요약 및 작성 보조 기능을 제공합니다.",
+        "strengths": "높은 자유도와 확장성, 풍부한 템플릿 생태계, 다양한 업무 데이터를 한곳에 모아 관리할 수 있는 문서 통합성."
+      },
+      {
+        "competitor": "Todoist",
+        "characteristics": "직관적인 UI와 자연어 입력 기능을 중심으로 한 할 일(To-Do) 및 프로젝트 관리 전문 애플리케이션입니다.",
+        "strengths": "빠르고 직관적인 할 일 추가, 뛰어난 멀티 플랫폼 연동성, 낮은 진입장벽과 명확한 작업 추적 기능."
+      }
+    ],
+    "differentiation": "기존 툴들의 수동 데이터 입력 피로감을 해결하는 완전 자동화 및 직관적 가이드 중심의 차별화를 도모합니다. Notion처럼 복잡한 초기 설정이나 학습 곡선 없이, Todoist처럼 쉬운 사용성을 유지하면서 AI가 사용자의 업무 패턴을 스스로 학습해 반복 업무를 자동화하고 우선순위를 제시하는 초개인화 AI 업무 파트너 이미지를 구축합니다."
+  },
+  "color_palette": {
+    "main_color": "#2563EB",
+    "sub_colors": [
+      "#10B981 shroud/growth -> #10B981",
+      " #F59E0B",
+      " #1E293B"
+    ]
+  },
   "logos": []
 }
