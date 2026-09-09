@@ -677,6 +677,9 @@ def palette_to_image(
             "meaning": color["meaning"],
         })
 
+    plt.rcParams["font.family"] = "Malgun Gothic"
+    plt.rcParams["axes.unicode_minus"] = False
+
     fig, ax = plt.subplots(
         figsize=(10, 3)
     )
@@ -710,9 +713,14 @@ def palette_to_image(
 
     ax.axis("off")
 
-    output_path = os.path.join(
-        output_dir,
-        "color_palette.png"
+    output_dir = os.path.abspath(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
+    output_path = os.path.normpath(
+        os.path.join(
+            output_dir,
+            "color_palette.png"
+        )
     )
 
     fig.savefig(
