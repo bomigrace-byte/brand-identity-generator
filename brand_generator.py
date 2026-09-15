@@ -2,6 +2,7 @@ import os
 import json
 import base64
 import re
+import time
 
 import matplotlib.pyplot as plt
 import requests
@@ -63,6 +64,21 @@ class CompetitorAnalysisResult(BaseModel):
 TEXT_MODEL = "gpt-5-mini"
 IMAGE_MODEL = "gpt-image-1-mini"
 
+def exponential_backoff(attempt):
+    """
+    재시도 전 대기 시간을 지수적으로 증가시킨다.
+
+    attempt=0 → 1초
+    attempt=1 → 2초
+    attempt=2 → 4초
+    """
+    wait_time = 2 ** attempt
+
+    print(
+        f"⏳ {wait_time}초 후 재시도합니다."
+    )
+
+    time.sleep(wait_time)
 
 def load_env():
     load_dotenv()
@@ -164,14 +180,46 @@ def call_codyssey_text(
         "max_tokens": 2000,
     }
 
-    response = requests.post(
-        url,
-        headers=headers,
-        json=payload,
-        timeout=120,
-    )
+    max_retries = 1
+    last_error = None
 
-    response.raise_for_status()
+    for attempt in range(max_retries + 1):
+
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=180,
+            )
+
+            response.raise_for_status()
+
+            break
+
+        except requests.RequestException as e:
+            last_error = str(e)
+
+            if attempt < max_retries:
+                print(
+                    f"⚠️ 로고 {i} 생성 API 호출 실패: {e}"
+                )
+                exponential_backoff(attempt)
+                print(
+                    f"🔄 로고 {i} 생성을 재시도합니다."
+                )
+            else:
+                print(
+                    f"❌ 로고 {i} 생성에 최종 실패했습니다."
+                )
+
+                errors.append({
+                    "step": "로고",
+                    "type": "ImageAPIError",
+                    "message": f"로고 {i}: {last_error}",
+                })
+
+                continue
 
     data = response.json()
 
@@ -273,6 +321,8 @@ def generate_structured_result(
             print(
                 "⚠️ AI 응답 검증에 실패했습니다."
             )
+
+            exponential_backoff(attempt)
 
             print(
                 "🔄 올바른 형식으로 재질문합니다."
@@ -796,7 +846,8 @@ def generate_logos(
     base_url,
     brief,
     output_dir,
-    naming
+    naming,
+    errors
 ):
     """
     Codyssey 이미지 API
@@ -1129,6 +1180,7 @@ if __name__ == "__main__":
         brief,
         output_dir,
         naming,
+        errors,
     )
 
     if logo_paths is None:
@@ -1179,8 +1231,14 @@ if __name__ == "__main__":
         print()
         print("생성 결과:")
 
-        for step_name, success in steps.items():
-            display_status = "✅ 성공" if success else "❌ 실패"
+        for step_name in status:
+            if status[step_name] == "success":
+                display_status = "✅ 성공"
+            elif status[step_name] == "skipped":
+                display_status = "⏭️ 건너뜀"
+            else:
+                display_status = "❌ 실패"
+
             print(f"  {display_status} {step_name}")
 
     print("=" * 50)
