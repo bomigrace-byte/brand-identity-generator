@@ -232,26 +232,78 @@ def generate_structured_result(
     API 호출
     → JSON 파싱
     → Pydantic 검증
+    → 실패 시 1회 재질문
     """
 
-    text = call_codyssey_text(
-        api_key,
-        base_url,
-        system_prompt,
-        user_prompt,
+    max_retries = 1
+    last_error = None
+
+    for attempt in range(max_retries + 1):
+
+        try:
+            text = call_codyssey_text(
+                api_key,
+                base_url,
+                system_prompt,
+                user_prompt,
+            )
+
+            data = parse_json_response(text)
+
+            result = result_model.model_validate(data)
+
+            return result.model_dump()
+
+        except ValidationError as e:
+
+            last_error = (
+                f"AI 응답 구조 검증 실패: {e}"
+            )
+
+        except ValueError as e:
+
+            last_error = str(e)
+
+        except Exception as e:
+
+            last_error = str(e)
+
+        if attempt < max_retries:
+
+            print(
+                "⚠️ AI 응답 검증에 실패했습니다."
+            )
+
+            print(
+                "🔄 올바른 형식으로 재질문합니다."
+            )
+
+            user_prompt = f"""
+이전 AI 응답이 요구된 형식 또는 데이터 구조를
+만족하지 못했습니다.
+
+발생한 문제:
+{last_error}
+
+이전 요청의 조건을 모두 유지하면서
+잘못된 부분을 수정하여 다시 작성하세요.
+
+반드시 다음 조건을 지키세요.
+
+1. 유효한 JSON 객체만 반환하세요.
+2. Markdown 코드 블록을 사용하지 마세요.
+3. JSON 앞뒤에 설명 문장을 추가하지 마세요.
+4. 필수 필드를 모두 포함하세요.
+5. 이전 요청에서 요구한 개수와 형식을 정확히 지키세요.
+
+원래 요청:
+{user_prompt}
+"""
+
+    raise ValueError(
+        f"AI 응답 생성에 최종 실패했습니다: "
+        f"{last_error}"
     )
-
-    data = parse_json_response(text)
-
-    try:
-        result = result_model.model_validate(data)
-
-    except ValidationError as e:
-        raise ValueError(
-            f"AI 응답 구조가 올바르지 않습니다: {e}"
-        ) from e
-
-    return result.model_dump()
 
 
 # =========================
@@ -768,8 +820,13 @@ def generate_logos(
         if korean_names:
             representative_name = korean_names[0]["name"]
 
-        base_prompt = f"""
-Create a professional brand logo concept.
+    if not representative_name:
+        raise ValueError(
+            "대표 브랜드명이 없어 로고를 생성할 수 없습니다."
+        )    
+
+    base_prompt = f"""
+    Create a professional brand logo concept.
 
 Brand name:
 {representative_name}
@@ -879,17 +936,29 @@ Make this concept visually distinct from the others.
 def safe_generate(
     step_name,
     generate_func,
+    status,
+    errors,
     *args
 ):
     try:
-        return generate_func(*args)
+        result = generate_func(*args)
+
+        if result is None:
+            status[step_name] = "skipped"
+        else:
+            status[step_name] = "success"
+
+        return result
+   
 
     except requests.HTTPError as e:
         response = e.response
 
+        error_message = f"HTTP {response.status_code}"
+
         print(
             f"⚠️ {step_name} 생성 실패: "
-            f"HTTP {response.status_code}"
+            f"{error_message}"
         )
 
         try:
@@ -901,15 +970,31 @@ def safe_generate(
                 f"   API 응답: {response.text}"
             )
 
+        status[step_name] = "failed"
+
+        errors.append({
+            "step": step_name,
+            "type": "HTTPError",
+            "message": error_message,
+        })
+
         return None
 
     except Exception as e:
+
         print(
             f"⚠️ {step_name} 생성 실패: {e}"
         )
 
-        return None
+        status[step_name] = "failed"
 
+        errors.append({
+            "step": step_name,
+            "type": type(e).__name__,
+            "message": str(e),
+        })
+
+        return None
 
 # =========================
 # 결과 저장
@@ -945,6 +1030,9 @@ def save_result(
 
 if __name__ == "__main__":
 
+    status = {}
+    errors = []
+
     try:
         api_key, base_url = load_env()
 
@@ -971,6 +1059,8 @@ if __name__ == "__main__":
     naming = safe_generate(
         "브랜드 네이밍",
         generate_naming,
+        status,
+        errors,
         api_key,
         base_url,
         brief,
@@ -979,6 +1069,8 @@ if __name__ == "__main__":
     slogans = safe_generate(
         "슬로건",
         generate_slogans,
+        status,
+        errors,
         api_key,
         base_url,
         brief,
@@ -987,6 +1079,8 @@ if __name__ == "__main__":
     brand_story = safe_generate(
         "브랜드 스토리",
         generate_brand_story,
+        status,
+        errors,
         api_key,
         base_url,
         brief,
@@ -996,6 +1090,8 @@ if __name__ == "__main__":
     competitor_analysis = safe_generate(
         "경쟁사 분석",
         generate_competitor_analysis,
+        status,
+        errors,
         api_key,
         base_url,
         brief,
@@ -1004,6 +1100,8 @@ if __name__ == "__main__":
     color_palette = safe_generate(
         "컬러 팔레트",
         generate_color_palette,
+        status,
+        errors,
         api_key,
         base_url,
         brief,
@@ -1015,6 +1113,8 @@ if __name__ == "__main__":
         palette_path = safe_generate(
             "컬러 팔레트 이미지",
             palette_to_image,
+            status,
+            errors,
             color_palette,
             output_dir,
         )
@@ -1022,6 +1122,8 @@ if __name__ == "__main__":
     logo_paths = safe_generate(
         "로고",
         generate_logos,
+        status,
+        errors,
         api_key,
         base_url,
         brief,
@@ -1041,6 +1143,8 @@ if __name__ == "__main__":
         "color_palette": color_palette,
         "color_palette_image": palette_path,
         "logos": logo_paths,
+        "status": status,
+        "errors": errors,
     }
 
     result_path = save_result(
@@ -1076,8 +1180,8 @@ if __name__ == "__main__":
         print("생성 결과:")
 
         for step_name, success in steps.items():
-            status = "✅ 성공" if success else "❌ 실패"
-            print(f"  {status} {step_name}")
+            display_status = "✅ 성공" if success else "❌ 실패"
+            print(f"  {display_status} {step_name}")
 
     print("=" * 50)
 
